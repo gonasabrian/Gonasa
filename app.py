@@ -1,168 +1,180 @@
-from flask import Flask, request, redirect, session, render_template_string
+import streamlit as st
+import gspread
+import pandas as pd
+import random
+from google.oauth2.service_account import Credentials
+from datetime import datetime
 
-app = Flask(__name__)
-app.secret_key = "gonasa123"
+st.set_page_config(page_title="GONASA Agent App", page_icon="💰", layout="centered")
+SHEET_ID = "1uqacKdD5Sr4HXQC2EjuZUH9xmLHdqirXVRaMX6U9Y9A"
 
-BASE_STYLE = """
-<meta name="viewport" content="width=device-width, initial-scale=1">
+st.markdown("""
 <style>
-*{box-sizing:border-box} body{font-family:Arial;margin:0;background:#f4f4f4;padding-bottom:80px}
-.top{background:#FFCC00;padding:18px 16px 12px;display:flex;justify-content:space-between;align-items:center}
-.top b{font-size:20px} .top span{font-size:13px;background:#000;color:#FFCC00;padding:5px 10px;border-radius:20px}
-.balance{background:#111;color:#fff;margin:15px;border-radius:16px;padding:20px}
-.balance small{color:#aaa} .balance h1{font-size:34px;margin:8px 0;color:#FFCC00}
-.balance p{margin:0;color:#ccc;font-size:13px}
-.card{background:#fff;margin:15px;border-radius:16px;padding:16px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.action{background:#fff;border-radius:16px;padding:18px 10px;text-align:center;border:1px solid #eee;cursor:pointer}
-.action div{font-size:28px} .action b{font-size:14px}
-input,select{width:100%;padding:15px;margin:8px 0;border-radius:12px;border:1px solid #ddd;font-size:16px}
-.btn{width:100%;padding:16px;background:#FFCC00;border:none;border-radius:12px;font-size:17px;font-weight:bold}
-.nav{position:fixed;bottom:0;left:0;right:0;background:#fff;display:flex;border-top:1px solid #eee;padding:10px 0}
-.nav div{flex:1;text-align:center;font-size:12px;color:#888} .nav .active{color:#000;font-weight:bold}
-.tx{display:flex;justify-content:space-between;padding:12px 0;border-bottom:1px solid #f0f0f0;font-size:14px}
+.top-box { background:#FFCC00; padding:18px; border-radius:16px; display:flex; justify-content:space-between; align-items:center; }
+.balance-box { background:#111; color:#fff; border-radius:16px; padding:20px; margin-top:15px; }
+.balance-box h1 { color:#FFCC00; font-size:34px; margin:5px 0; }
+.card { background:#fff; border-radius:16px; padding:16px; margin-top:15px; }
+.stButton > button { width:100%; background:#FFCC00; color:#000; font-weight:bold; padding:12px; border-radius:12px; border:none; font-size:17px; }
 </style>
-"""
+""", unsafe_allow_html=True)
 
-LOGIN_HTML = """
-<html><head>""" + BASE_STYLE + """</head><body>
-<div style="padding:30px 20px;text-align:center"><h1 style="font-size:32px">GONASA</h1><p>Agent App</p></div>
-<div class="card"><form method="POST">
-<input name="user" placeholder="Username - agent1">
-<input name="pass" type="password" placeholder="Password - 1234">
-<button class="btn">LOGIN</button><p style="color:red;text-align:center">{{error}}</p></form></div>
-</body></html>
-"""
+@st.cache_resource
+def get_client():
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    return gspread.authorize(creds)
 
-DASH_HTML = """
-<html><head>""" + BASE_STYLE + """</head><body>
-<div class="top"><div><b>GONASA</b><br><small>Agent 1 • 0764004072</small></div><span>SANDBOX</span></div>
+def get_settings():
+    # Settings tab: Key | value
+    ws = get_client().open_by_key(SHEET_ID).worksheet("Settings")
+    rows = ws.get_all_values()
+    d = {}
+    for r in rows[1:]:
+        if len(r) >= 2 and r[0].strip() != "":
+            d[r[0].strip()] = r[1].strip()
+    return d
 
-<div class="balance"><small>Available Balance</small><h1>UGX 0</h1><p>Tap to refresh • Last updated now</p></div>
+def get_users():
+    # Users tab: Row2 header Password | Name | Phone, data from Row3
+    ws = get_client().open_by_key(SHEET_ID).worksheet("Users")
+    rows = ws.get_all_values()
+    users = []
+    for r in rows[2:]:
+        vals = [x.strip() for x in r if x.strip() != ""]
+        if len(vals) >= 3:
+            users.append({"Password": vals[0], "Name": vals[1], "Phone": vals[2]})
+    return pd.DataFrame(users)
 
-<div class="grid" style="margin:0 15px">
-  <div class="action" onclick="window.location='/deposit'"><div>⬇️</div><b>Deposit</b><br><small>Cash In</small></div>
-  <div class="action" onclick="window.location='/withdraw'"><div>⬆️</div><b>Withdraw</b><br><small>Cash Out</small></div>
-  <div class="action" onclick="window.location='/share-float'"><div>🔄</div><b>Share Float</b><br><small>Send Float</small></div>
-  <div class="action" onclick="window.location='/history'"><div>📄</div><b>History</b><br><small>Today</small></div>
-</div>
+def save_transaction(agent, tx_type, cust_phone, amount):
+    # Transactions: Date | Agent | Type | Customer_phone | Amount | Status | Ref
+    ws = get_client().open_by_key(SHEET_ID).worksheet("Transactions")
+    ref = f"GON{random.randint(100000,999999)}"
+    ws.append_row([
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        agent, tx_type, str(cust_phone), int(amount), "Success", ref
+    ])
+    return ref
 
-<div class="card"><h3 style="margin:0 0 10px">Recent Transactions</h3>
-<div class="tx"><span>MTN Deposit<br><small>0788401754 • Today</small></span><b>UGX 5,000</b></div>
-<div class="tx"><span>MTN Withdraw<br><small>077xxxxxxx • Today</small></span><b>UGX 10,000</b></div>
-<p style="text-align:center;color:#888;font-size:13px">No more transactions</p></div>
+def get_history():
+    ws = get_client().open_by_key(SHEET_ID).worksheet("Transactions")
+    return pd.DataFrame(ws.get_all_records())
 
-<div class="nav"><div class="active">🏠<br>Home</div><div>💰<br>Float</div><div>📊<br>Report</div><div>👤<br>Profile</div></div>
-</body></html>
-"""
+# Settings - from your Sheet
+try:
+    SETTINGS = get_settings()
+    ENV = SETTINGS.get("env", "sandbox").upper()
+    BUSINESS_NO = SETTINGS.get("Business_number", "766756708")
+except:
+    ENV = "SANDBOX"
+    BUSINESS_NO = "766756708"
 
-FORM_HTML = """
-<html><head>""" + BASE_STYLE + """</head><body>
-<div class="top"><b>← {{title}}</b><span>SANDBOX</span></div>
-<div class="card"><h3>{{title}}</h3>
-<form method="POST" action="/validate">
-<input type="hidden" name="tx_type" value="{{title}}">
-<input name="cust_no" placeholder="Customer No. e.g 0788401754" required>
-<input name="amount" type="number" placeholder="Amount UGX e.g 5000" required>
-<button class="btn">Validate →</button></form>
-<p style="font-size:13px;color:#888;text-align:center">Name will be fetched automatically after Validate</p></div>
-</body></html>
-"""
+if "logged" not in st.session_state: st.session_state.logged = False
+if "user" not in st.session_state: st.session_state.user = ""
+if "phone" not in st.session_state: st.session_state.phone = ""
+if "page" not in st.session_state: st.session_state.page = "dashboard"
+if "pending" not in st.session_state: st.session_state.pending = None
 
-SHARE_FLOAT_HTML = """
-<html><head>""" + BASE_STYLE + """</head><body>
-<div class="top"><b>← Share Float</b><span>SANDBOX</span></div>
-<div class="card"><h3>Share Float</h3>
-<form method="POST" action="/validate">
-<input type="hidden" name="tx_type" value="Share Float">
-<input name="cust_no" placeholder="Receiver Agent No. e.g 077xxxxxxx" required>
-<input name="amount" type="number" placeholder="Amount UGX e.g 50000" required>
-<button class="btn">Validate →</button></form>
-<p style="font-size:13px;color:#888;text-align:center">Send float to another agent</p></div>
-</body></html>
-"""
+# --- LOGIN ---
+if not st.session_state.logged:
+    st.markdown("<h1 style='text-align:center'>GONASA</h1><p style='text-align:center'>Agent App</p>", unsafe_allow_html=True)
+    st.caption(f"Business: {BUSINESS_NO} • Env: {ENV}")
+    user = st.text_input("Username", placeholder="e.g amulamu")
+    password = st.text_input("Password", type="password", placeholder="1234")
+    if st.button("LOGIN"):
+        df = get_users()
+        match = df[(df['Name'].str.lower() == user.lower()) & (df['Password'].astype(str) == str(password))]
+        if not match.empty:
+            st.session_state.logged = True
+            st.session_state.user = match.iloc[0]['Name']
+            st.session_state.phone = match.iloc[0]['Phone']
+            st.rerun()
+        else:
+            st.error("Wrong login")
+    st.stop()
 
-HISTORY_HTML = """
-<html><head>""" + BASE_STYLE + """</head><body>
-<div class="top"><b>← History</b><span>SANDBOX</span></div>
-<div class="card"><h3>Today's History</h3>
-<div class="tx"><span>MTN Deposit<br><small>0788401754 • 10:15 AM</small></span><b>UGX 5,000</b></div>
-<div class="tx"><span>MTN Withdraw<br><small>077xxxxxxx • 09:40 AM</small></span><b>UGX 10,000</b></div>
-<div class="tx"><span>Share Float<br><small>076xxxxxxx • 09:00 AM</small></span><b>UGX 50,000</b></div>
-</div>
-<div style="text-align:center"><a href="/dashboard">← Back to Home</a></div>
-</body></html>
-"""
+# --- TOP BAR ---
+st.markdown(f"""
+<div class="top-box"><div><b style="font-size:20px">GONASA</b><br><small>{st.session_state.user} • {st.session_state.phone}</small></div>
+<span style="font-size:13px;background:#000;color:#FFCC00;padding:5px 10px;border-radius:20px">{ENV}</span></div>
+""", unsafe_allow_html=True)
 
-CONFIRM_HTML = """
-<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
-<style>body{font-family:Arial;background:#1a1a2e;color:#fff;padding:20px;margin:0}
-h3{text-align:center;font-size:22px;margin:20px 0 30px}
-.row{display:flex;justify-content:space-between;padding:14px 0;border-bottom:1px solid #333;font-size:16px}
-.row span:first-child{color:#aaa} .row span:last-child{font-weight:bold;text-align:right}
-.total{background:#2a2a45;padding:15px;border-radius:10px;margin-top:20px}
-.btns{display:flex;gap:10px;margin-top:25px}
-.cancel{flex:1;background:#e63946;color:#fff;padding:16px;border:none;border-radius:10px;font-size:18px;font-weight:bold}
-.confirm{flex:1;background:#1d3557;color:#fff;padding:16px;border:none;border-radius:10px;font-size:18px;font-weight:bold}
-</style></head>
-<body><h3>Confirm Payment</h3>
-<div class="row"><span>Customer No.</span><span>{{cust_no}}</span></div>
-<div class="row"><span>Customer Name</span><span>{{cust_name}}</span></div>
-<div class="row"><span>Item</span><span>{{tx_type}}</span></div>
-<div class="row"><span>Biller</span><span>MTN Mobile Money</span></div>
-<div class="row"><span>Payment Mode</span><span>Cash</span></div>
-<div class="total">
-<div class="row" style="border:none"><span>Amount UGX</span><span>{{amount}}</span></div>
-<div class="row" style="border:none"><span>Excise Duty UGX</span><span>0</span></div>
-<div class="row" style="border:none"><span>Surcharge UGX</span><span>0</span></div>
-<div class="row" style="border:none"><span>Total UGX</span><span>{{amount}}</span></div>
-</div>
-<div class="btns">
-<button class="cancel" onclick="window.location='/dashboard'">Cancel</button>
-<form method="POST" action="/confirm" style="flex:1"><button class="confirm">Confirm</button></form>
-</div></body></html>
-"""
+menu = st.sidebar.radio("Menu", ["🏠 Dashboard", "⬇️ Deposit", "⬆️ Withdraw", "🔄 Share Float", "📄 History", "🚪 Logout"])
+if menu == "🚪 Logout":
+    st.session_state.logged = False; st.rerun()
+elif "Dashboard" in menu: st.session_state.page = "dashboard"
+elif "Deposit" in menu: st.session_state.page = "deposit"
+elif "Withdraw" in menu: st.session_state.page = "withdraw"
+elif "Share Float" in menu: st.session_state.page = "share"
+elif "History" in menu: st.session_state.page = "history"
 
-@app.route("/", methods=["GET","POST"])
-def login():
-    error=""
-    if request.method=="POST":
-        if request.form.get("user")=="agent1" and request.form.get("pass")=="1234":
-            session["logged"]=True
-            return redirect("/dashboard")
-        error="Wrong login"
-    return render_template_string(LOGIN_HTML, error=error)
+if st.session_state.page == "dashboard":
+    st.markdown("""<div class="balance-box"><small style="color:#aaa">Available Balance</small>
+    <h1>UGX 0</h1><p style="color:#ccc;font-size:13px">Tap to refresh • Last updated now</p></div>""", unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    if c1.button("⬇️ Deposit"): st.session_state.page="deposit"; st.rerun()
+    if c2.button("⬆️ Withdraw"): st.session_state.page="withdraw"; st.rerun()
+    c3, c4 = st.columns(2)
+    if c3.button("🔄 Share Float"): st.session_state.page="share"; st.rerun()
+    if c4.button("📄 History"): st.session_state.page="history"; st.rerun()
+    st.markdown("<div class='card'><h3>Recent Transactions</h3>", unsafe_allow_html=True)
+    df = get_history()
+    if not df.empty:
+        for _, r in df.tail(5).iloc[::-1].iterrows():
+            st.write(f"**{r['Type']}** - {r['Customer_phone']} - UGX {r['Amount']} - {r['Status']}")
+    else:
+        st.write("No transactions yet")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-@app.route("/dashboard")
-def dashboard():
-    if not session.get("logged"): return redirect("/")
-    return render_template_string(DASH_HTML)
+elif st.session_state.page in ["deposit", "withdraw", "share"]:
+    titles = {"deposit": "MTN Deposit", "withdraw": "MTN Withdraw", "share": "Share Float"}
+    title = titles[st.session_state.page]
+    st.markdown(f'<div class="card"><h3>{title}</h3>', unsafe_allow_html=True)
+    cust_no = st.text_input("Customer No.", placeholder="e.g 0788401754" if title!="Share Float" else "Receiver Agent No.")
+    amount = st.number_input("Amount UGX", min_value=0, step=1000)
+    st.markdown('</div>', unsafe_allow_html=True)
+    if st.button("Validate →"):
+        if cust_no and amount > 0:
+            cust_name = "BRIAN GONASA" if cust_no=="0788401754" else "CUSTOMER NAME"
+            st.session_state.pending = {"cust_no":cust_no, "amount":amount, "tx_type":title, "cust_name":cust_name}
+            st.session_state.page="confirm"; st.rerun()
+        else: st.error("Enter customer number and amount")
+    st.caption("Name will be fetched automatically after Validate")
+    if st.button("← Back to Home"): st.session_state.page="dashboard"; st.rerun()
 
-@app.route("/deposit")
-def deposit():
-    return render_template_string(FORM_HTML, title="MTN Deposit")
+elif st.session_state.page == "confirm":
+    p = st.session_state.pending
+    st.markdown(f"""
+    <div style="background:#1a1a2e;color:#fff;padding:20px;border-radius:16px">
+    <h3 style="text-align:center">Confirm Payment</h3>
+    <p>Customer No.: <b style="float:right">{p['cust_no']}</b></p>
+    <p>Customer Name: <b style="float:right">{p['cust_name']}</b></p>
+    <p>Item: <b style="float:right">{p['tx_type']}</b></p>
+    <p>Biller: <b style="float:right">MTN Mobile Money</b></p>
+    <p>Business No.: <b style="float:right">{BUSINESS_NO}</b></p>
+    <p>Payment Mode: <b style="float:right">Cash</b></p><hr>
+    <p>Amount UGX: <b style="float:right">{p['amount']}</b></p>
+    <p>Total UGX: <b style="float:right">{p['amount']}</b></p></div>
+    """, unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    if c1.button("Cancel"): st.session_state.page="dashboard"; st.rerun()
+    if c2.button("Confirm"):
+        ref = save_transaction(st.session_state.user, p['tx_type'], p['cust_no'], p['amount'])
+        st.session_state.last_ref = ref
+        st.session_state.page="done"; st.rerun()
 
-@app.route("/withdraw")
-def withdraw():
-    return render_template_string(FORM_HTML, title="MTN Withdraw")
+elif st.session_state.page == "done":
+    st.success(f"✅ Transaction Sent to MTN... Ref: {st.session_state.get('last_ref','')}")
+    st.info("Saved to Google Sheet -> Transactions tab")
+    if st.button("Back to Home"): st.session_state.page="dashboard"; st.rerun()
 
-@app.route("/share-float")
-def share_float():
-    return render_template_string(SHARE_FLOAT_HTML)
-
-@app.route("/history")
-def history():
-    return render_template_string(HISTORY_HTML)
-
-@app.route("/validate", methods=["POST"])
-def validate():
-    cust_no=request.form.get("cust_no"); amount=request.form.get("amount"); tx_type=request.form.get("tx_type")
-    cust_name="BRIAN GONASA" if cust_no=="0788401754" else "CUSTOMER NAME"
-    return render_template_string(CONFIRM_HTML, cust_no=cust_no, cust_name=cust_name, tx_type=tx_type, amount=amount)
-
-@app.route("/confirm", methods=["POST"])
-def confirm():
-    return "<h2 style='font-family:Arial;text-align:center'>✅ Transaction Sent to MTN...</h2><p style='text-align:center'><a href='/dashboard'>Back to Home</a></p>"
-
-if __name__=="__main__":
-    app.run(host="0.0.0.0", port=5000)
+elif st.session_state.page == "history":
+    st.markdown("<div class='card'><h3>Today's History</h3>", unsafe_allow_html=True)
+    df = get_history()
+    if not df.empty:
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.write("No history yet")
+    st.markdown("</div>", unsafe_allow_html=True)
+    if st.button("← Back to Home"): st.session_state.page="dashboard"; st.rerun()
