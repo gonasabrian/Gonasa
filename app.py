@@ -1,145 +1,168 @@
-# GONASA - 5 Agents - Render + Google Sheet + GitHub
-# KEYS ARE IN RENDER, NOT HERE - EDIT IN RENDER DASHBOARD
-import os, uuid, time, requests
-from flask import Flask, request, render_template_string, session, redirect, jsonify
+from flask import Flask, request, redirect, session, render_template_string
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "gonasa-secret-123")
+app.secret_key = "gonasa123"
 
-# --- YOUR 5 AGENTS ---
-AGENTS = {
-    "agent1": {"password": "1234", "name": "Agent 1", "phone": "0764004072"},
-    "agent2": {"password": "1234", "name": "Agent 2", "phone": "0765721544"},
-    "agent3": {"password": "1234", "name": "Agent 3", "phone": "0774815047"},
-    "agent4": {"password": "1234", "name": "Agent 4", "phone": "0783733968"},
-    "agent5": {"password": "1234", "name": "Agent 5", "phone": "0779394542"},
-}
-# --- MTN CONFIG - FROM RENDER ENV VARS ---
-CFG = {
-    "ENV": os.environ.get("MTN_ENV", "sandbox"),
-    "BASE_URL": os.environ.get("MTN_BASE_URL", "https://sandbox.momodeveloper.mtn.com"),
-    "COLLECTION_KEY": os.environ.get("COLLECTION_KEY", ""),
-    "DISBURSEMENT_KEY": os.environ.get("DISBURSEMENT_KEY", ""),
-    "API_USER_ID": os.environ.get("API_USER_ID", ""),
-    "API_KEY": os.environ.get("API_KEY", ""),
-    "SHEET_ID": os.environ.get("GOOGLE_SHEET_ID", ""),
-}
-BUSINESS_NUMBER = "0766756708"
-history = []
-
-def get_token(is_collection=True):
-    key = CFG["COLLECTION_KEY"] if is_collection else CFG["DISBURSEMENT_KEY"]
-    prod = "collection" if is_collection else "disbursement"
-    r = requests.post(f"{CFG['BASE_URL']}/{prod}/token/",
-        headers={"Ocp-Apim-Subscription-Key": key},
-        json={"grant_type": "client_credentials"},
-        auth=(CFG["API_USER_ID"], CFG["API_KEY"]))
-    return r.json().get("access_token") if r.status_code == 200 else None
-
-def fmt(p):
-    p = p.strip().replace(" ", "").replace("+", "")
-    if p.startswith("0"): p = "256" + p[1:]
-    return p
-
-def save_to_sheet(agent, type_, phone, amount, status, ref):
-    # Google Sheet - will work after you add GOOGLE_CREDENTIALS in Render
-    # For now saves to memory, Sheet sync in next step
-    history.insert(0, {"date": time.strftime("%Y-%m-%d %H:%M"), "agent": agent, "type": type_, "phone": phone, "amount": amount, "status": status, "ref": ref})
-    try:
-        import gspread, json
-        creds = os.environ.get("GOOGLE_CREDENTIALS")
-        if creds and CFG["SHEET_ID"]:
-            gc = gspread.service_account_from_dict(json.loads(creds))
-            sh = gc.open_by_key(CFG["SHEET_ID"])
-            ws = sh.worksheet("Transactions")
-            ws.append_row([time.strftime("%Y-%m-%d %H:%M"), agent, type_, phone, amount, status, ref])
-    except Exception as e:
-        print("Sheet error:", e)
-
-LOGIN_HTML = """
-<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-<style>body{font-family:Arial;background:#f4f4f4;padding:20px} .c{background:#fff;padding:25px;border-radius:15px;max-width:400px;margin:50px auto} input{width:100%;padding:12px;margin:8px 0;border:1px solid #ddd;border-radius:8px;box-sizing:border-box} button{width:100%;padding:14px;background:#FFCC00;border:none;border-radius:10px;font-weight:bold} h2{text-align:center}</style></head><body>
-<div class="c"><h2>GONASA</h2><p style="text-align:center">Login - 5 Agents</p>
-<form method="POST"><input name="username" placeholder="Username e.g. agent1" required><input name="password" type="password" placeholder="Password" required><button>Login</button></form>
-<p style="font-size:12px;text-align:center">agent1 / 1234<br>agent2 / 1234<br>agent3 / 1234<br>agent4 / 1234<br>agent5 / 1234</p></div></body></html>
+BASE_STYLE = """
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+*{box-sizing:border-box} body{font-family:Arial;margin:0;background:#f4f4f4;padding-bottom:80px}
+.top{background:#FFCC00;padding:18px 16px 12px;display:flex;justify-content:space-between;align-items:center}
+.top b{font-size:20px} .top span{font-size:13px;background:#000;color:#FFCC00;padding:5px 10px;border-radius:20px}
+.balance{background:#111;color:#fff;margin:15px;border-radius:16px;padding:20px}
+.balance small{color:#aaa} .balance h1{font-size:34px;margin:8px 0;color:#FFCC00}
+.balance p{margin:0;color:#ccc;font-size:13px}
+.card{background:#fff;margin:15px;border-radius:16px;padding:16px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.action{background:#fff;border-radius:16px;padding:18px 10px;text-align:center;border:1px solid #eee;cursor:pointer}
+.action div{font-size:28px} .action b{font-size:14px}
+input,select{width:100%;padding:15px;margin:8px 0;border-radius:12px;border:1px solid #ddd;font-size:16px}
+.btn{width:100%;padding:16px;background:#FFCC00;border:none;border-radius:12px;font-size:17px;font-weight:bold}
+.nav{position:fixed;bottom:0;left:0;right:0;background:#fff;display:flex;border-top:1px solid #eee;padding:10px 0}
+.nav div{flex:1;text-align:center;font-size:12px;color:#888} .nav .active{color:#000;font-weight:bold}
+.tx{display:flex;justify-content:space-between;padding:12px 0;border-bottom:1px solid #f0f0f0;font-size:14px}
+</style>
 """
 
-MAIN_HTML = """
-<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>GONASA</title>
-<style>body{font-family:Arial;background:#f4f4f4;margin:0;padding:12px}.card{background:#fff;padding:18px;border-radius:14px;margin-bottom:12px}.top{background:#000;color:#FFCC00;padding:15px;border-radius:12px;text-align:center}.top b{font-size:22px}.top span{color:#fff;font-size:13px;display:block}input{width:100%;padding:12px;margin:7px 0;border:1px solid #ddd;border-radius:8px;font-size:16px;box-sizing:border-box}button{width:100%;padding:14px;border:none;border-radius:10px;font-size:16px;font-weight:bold}.y{background:#FFCC00}.b{background:#000;color:#FFCC00}.g{background:green;color:#fff}.grey{background:#eee}.res{padding:10px;background:#e8f5e9;border-radius:8px;margin-top:8px;display:none}table{width:100%;font-size:12px}td{padding:7px;border-bottom:1px solid #eee}a{color:#fff}</style></head><body>
-<div class="top"><b>GONASA</b><span>Hi {{name}} • {{phone}} • {{env}} • <a href="/logout">Logout</a></span></div>
-<div class="card"><h3>💰 Balance - 0766756708</h3><button class="grey" onclick="bal()">Check Balance</button><div id="balRes" class="res"></div></div>
-<div class="card"><h3>🔍 Name Lookup</h3><input id="lPhone" placeholder="Number"><button class="g" onclick="lookup()">Check Name</button><div id="lRes" class="res"></div></div>
-<div class="card"><h3>⬇️ Deposit</h3><input id="dPhone" placeholder="Customer Number"><input id="dAmt" type="number" placeholder="Amount UGX"><button class="y" onclick="pay('deposit')">Request Deposit</button><div id="dRes" class="res"></div></div>
-<div class="card"><h3>⬆️ Withdraw</h3><input id="wPhone" placeholder="Customer Number"><input id="wAmt" type="number" placeholder="Amount UGX"><button class="b" onclick="pay('withdraw')">Send Withdraw</button><div id="wRes" class="res"></div></div>
-<div class="card"><h3>📋 My Transactions</h3><div id="hist">Loading...</div><button class="grey" onclick="loadHist()">Refresh</button></div>
-<script>
-async function call(url,body,elId){let r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});let d=await r.json();let el=document.getElementById(elId);el.style.display='block';el.innerHTML=d.success?`✅ ${d.msg||''} ${d.ref?'Ref: '+d.ref:''} ${d.data?JSON.stringify(d.data):''}`:`❌ ${d.error}`;return d;}
-function lookup(){call('/api/lookup',{phone:document.getElementById('lPhone').value},'lRes')}
-function bal(){call('/api/balance',{},'balRes')}
-function pay(t){let p=document.getElementById(t=='deposit'?'dPhone':'wPhone').value;let a=document.getElementById(t=='deposit'?'dAmt':'wAmt').value;call('/api/'+t,{phone:p,amount:a},t=='deposit'?'dRes':'wRes').then(()=>loadHist())}
-async function loadHist(){let r=await fetch('/api/history');let d=await r.json();if(!d.length){document.getElementById('hist').innerHTML='No transactions';return;}document.getElementById('hist').innerHTML='<table>'+d.map(x=>`<tr><td>${x.date}</td><td>${x.agent}</td><td>${x.type}</td><td>${x.phone}</td><td>${x.amount}</td><td>${x.status}</td></tr>`).join('')+'</table>'}
-loadHist();
-</script></body></html>
+LOGIN_HTML = """
+<html><head>""" + BASE_STYLE + """</head><body>
+<div style="padding:30px 20px;text-align:center"><h1 style="font-size:32px">GONASA</h1><p>Agent App</p></div>
+<div class="card"><form method="POST">
+<input name="user" placeholder="Username - agent1">
+<input name="pass" type="password" placeholder="Password - 1234">
+<button class="btn">LOGIN</button><p style="color:red;text-align:center">{{error}}</p></form></div>
+</body></html>
+"""
+
+DASH_HTML = """
+<html><head>""" + BASE_STYLE + """</head><body>
+<div class="top"><div><b>GONASA</b><br><small>Agent 1 • 0764004072</small></div><span>SANDBOX</span></div>
+
+<div class="balance"><small>Available Balance</small><h1>UGX 0</h1><p>Tap to refresh • Last updated now</p></div>
+
+<div class="grid" style="margin:0 15px">
+  <div class="action" onclick="window.location='/deposit'"><div>⬇️</div><b>Deposit</b><br><small>Cash In</small></div>
+  <div class="action" onclick="window.location='/withdraw'"><div>⬆️</div><b>Withdraw</b><br><small>Cash Out</small></div>
+  <div class="action" onclick="window.location='/share-float'"><div>🔄</div><b>Share Float</b><br><small>Send Float</small></div>
+  <div class="action" onclick="window.location='/history'"><div>📄</div><b>History</b><br><small>Today</small></div>
+</div>
+
+<div class="card"><h3 style="margin:0 0 10px">Recent Transactions</h3>
+<div class="tx"><span>MTN Deposit<br><small>0788401754 • Today</small></span><b>UGX 5,000</b></div>
+<div class="tx"><span>MTN Withdraw<br><small>077xxxxxxx • Today</small></span><b>UGX 10,000</b></div>
+<p style="text-align:center;color:#888;font-size:13px">No more transactions</p></div>
+
+<div class="nav"><div class="active">🏠<br>Home</div><div>💰<br>Float</div><div>📊<br>Report</div><div>👤<br>Profile</div></div>
+</body></html>
+"""
+
+FORM_HTML = """
+<html><head>""" + BASE_STYLE + """</head><body>
+<div class="top"><b>← {{title}}</b><span>SANDBOX</span></div>
+<div class="card"><h3>{{title}}</h3>
+<form method="POST" action="/validate">
+<input type="hidden" name="tx_type" value="{{title}}">
+<input name="cust_no" placeholder="Customer No. e.g 0788401754" required>
+<input name="amount" type="number" placeholder="Amount UGX e.g 5000" required>
+<button class="btn">Validate →</button></form>
+<p style="font-size:13px;color:#888;text-align:center">Name will be fetched automatically after Validate</p></div>
+</body></html>
+"""
+
+SHARE_FLOAT_HTML = """
+<html><head>""" + BASE_STYLE + """</head><body>
+<div class="top"><b>← Share Float</b><span>SANDBOX</span></div>
+<div class="card"><h3>Share Float</h3>
+<form method="POST" action="/validate">
+<input type="hidden" name="tx_type" value="Share Float">
+<input name="cust_no" placeholder="Receiver Agent No. e.g 077xxxxxxx" required>
+<input name="amount" type="number" placeholder="Amount UGX e.g 50000" required>
+<button class="btn">Validate →</button></form>
+<p style="font-size:13px;color:#888;text-align:center">Send float to another agent</p></div>
+</body></html>
+"""
+
+HISTORY_HTML = """
+<html><head>""" + BASE_STYLE + """</head><body>
+<div class="top"><b>← History</b><span>SANDBOX</span></div>
+<div class="card"><h3>Today's History</h3>
+<div class="tx"><span>MTN Deposit<br><small>0788401754 • 10:15 AM</small></span><b>UGX 5,000</b></div>
+<div class="tx"><span>MTN Withdraw<br><small>077xxxxxxx • 09:40 AM</small></span><b>UGX 10,000</b></div>
+<div class="tx"><span>Share Float<br><small>076xxxxxxx • 09:00 AM</small></span><b>UGX 50,000</b></div>
+</div>
+<div style="text-align:center"><a href="/dashboard">← Back to Home</a></div>
+</body></html>
+"""
+
+CONFIRM_HTML = """
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font-family:Arial;background:#1a1a2e;color:#fff;padding:20px;margin:0}
+h3{text-align:center;font-size:22px;margin:20px 0 30px}
+.row{display:flex;justify-content:space-between;padding:14px 0;border-bottom:1px solid #333;font-size:16px}
+.row span:first-child{color:#aaa} .row span:last-child{font-weight:bold;text-align:right}
+.total{background:#2a2a45;padding:15px;border-radius:10px;margin-top:20px}
+.btns{display:flex;gap:10px;margin-top:25px}
+.cancel{flex:1;background:#e63946;color:#fff;padding:16px;border:none;border-radius:10px;font-size:18px;font-weight:bold}
+.confirm{flex:1;background:#1d3557;color:#fff;padding:16px;border:none;border-radius:10px;font-size:18px;font-weight:bold}
+</style></head>
+<body><h3>Confirm Payment</h3>
+<div class="row"><span>Customer No.</span><span>{{cust_no}}</span></div>
+<div class="row"><span>Customer Name</span><span>{{cust_name}}</span></div>
+<div class="row"><span>Item</span><span>{{tx_type}}</span></div>
+<div class="row"><span>Biller</span><span>MTN Mobile Money</span></div>
+<div class="row"><span>Payment Mode</span><span>Cash</span></div>
+<div class="total">
+<div class="row" style="border:none"><span>Amount UGX</span><span>{{amount}}</span></div>
+<div class="row" style="border:none"><span>Excise Duty UGX</span><span>0</span></div>
+<div class="row" style="border:none"><span>Surcharge UGX</span><span>0</span></div>
+<div class="row" style="border:none"><span>Total UGX</span><span>{{amount}}</span></div>
+</div>
+<div class="btns">
+<button class="cancel" onclick="window.location='/dashboard'">Cancel</button>
+<form method="POST" action="/confirm" style="flex:1"><button class="confirm">Confirm</button></form>
+</div></body></html>
 """
 
 @app.route("/", methods=["GET","POST"])
 def login():
+    error=""
     if request.method=="POST":
-        u=request.form.get("username"); p=request.form.get("password")
-        if u in AGENTS and AGENTS[u]["password"]==p:
-            session["user"]=u; return redirect("/app")
-        return LOGIN_HTML + "<p style='text-align:center;color:red'>Wrong login</p>"
-    if "user" in session: return redirect("/app")
-    return LOGIN_HTML
+        if request.form.get("user")=="agent1" and request.form.get("pass")=="1234":
+            session["logged"]=True
+            return redirect("/dashboard")
+        error="Wrong login"
+    return render_template_string(LOGIN_HTML, error=error)
 
-@app.route("/app")
-def main():
-    if "user" not in session: return redirect("/")
-    a=AGENTS[session["user"]]
-    return render_template_string(MAIN_HTML, name=a["name"], phone=a["phone"], env=CFG["ENV"].upper())
+@app.route("/dashboard")
+def dashboard():
+    if not session.get("logged"): return redirect("/")
+    return render_template_string(DASH_HTML)
 
-@app.route("/logout")
-def logout(): session.clear(); return redirect("/")
+@app.route("/deposit")
+def deposit():
+    return render_template_string(FORM_HTML, title="MTN Deposit")
 
-@app.route("/api/balance", methods=["POST"])
-def balance():
-    if "user" not in session: return jsonify({"success":False,"error":"Login first"})
-    t=get_token(True)
-    if not t: return jsonify({"success":False,"error":"Token failed - Check Keys in Render"})
-    r=requests.get(f"{CFG['BASE_URL']}/collection/v1_0/account/balance", headers={"Authorization":f"Bearer {t}","X-Target-Environment":CFG["ENV"],"Ocp-Apim-Subscription-Key":CFG["COLLECTION_KEY"]})
-    return jsonify({"success":r.status_code==200,"data":r.json() if r.status_code==200 else None,"error":r.text[:200] if r.status_code!=200 else "","msg":"Balance: "})
+@app.route("/withdraw")
+def withdraw():
+    return render_template_string(FORM_HTML, title="MTN Withdraw")
 
-@app.route("/api/lookup", methods=["POST"])
-def lookup():
-    if "user" not in session: return jsonify({"success":False,"error":"Login first"})
-    phone=fmt(request.json.get("phone","")); t=get_token(True)
-    if not t: return jsonify({"success":False,"error":"Token failed"})
-    r=requests.get(f"{CFG['BASE_URL']}/collection/v1_0/accountholder/msisdn/{phone}/active", headers={"Authorization":f"Bearer {t}","X-Target-Environment":CFG["ENV"],"Ocp-Apim-Subscription-Key":CFG["COLLECTION_KEY"]})
-    return jsonify({"success":r.status_code==200,"data":r.json() if r.status_code==200 else None,"error":r.text[:200] if r.status_code!=200 else "","msg":f"Number {request.json.get('phone')} is Active"})
+@app.route("/share-float")
+def share_float():
+    return render_template_string(SHARE_FLOAT_HTML)
 
-@app.route("/api/deposit", methods=["POST"])
-def dep(): return transact("deposit", request.json)
-@app.route("/api/withdraw", methods=["POST"])
-def wd(): return transact("withdraw", request.json)
+@app.route("/history")
+def history():
+    return render_template_string(HISTORY_HTML)
 
-def transact(type_, data):
-    if "user" not in session: return jsonify({"success":False,"error":"Login first"})
-    phone=fmt(data.get("phone","")); amt=str(data.get("amount","")); is_dep=type_=="deposit"
-    t=get_token(is_dep)
-    if not t: return jsonify({"success":False,"error":"Token failed - Check Keys in Render"})
-    ref=str(uuid.uuid4()); key=CFG["COLLECTION_KEY"] if is_dep else CFG["DISBURSEMENT_KEY"]
-    prod="collection" if is_dep else "disbursement"; ep="requesttopay" if is_dep else "transfer"; party="payer" if is_dep else "payee"
-    body={"amount":amt,"currency":"UGX","externalId":f"GONASA-{type_.upper()}-{int(time.time())}",party:{"partyIdType":"MSISDN","partyId":phone},"payerMessage":f"GONASA {type_}","payeeNote":f"GONASA {type_}"}
-    r=requests.post(f"{CFG['BASE_URL']}/{prod}/v1_0/{ep}", headers={"Authorization":f"Bearer {t}","X-Reference-Id":ref,"X-Target-Environment":CFG["ENV"],"Ocp-Apim-Subscription-Key":key}, json=body)
-    if r.status_code in [200,202]:
-        save_to_sheet(session["user"], type_.upper(), data.get("phone"), amt, "PENDING", ref)
-        return jsonify({"success":True,"ref":ref,"msg":f"{type_} sent - Customer must approve"})
-    return jsonify({"success":False,"error":f"{r.status_code} - {r.text[:300]}"})
+@app.route("/validate", methods=["POST"])
+def validate():
+    cust_no=request.form.get("cust_no"); amount=request.form.get("amount"); tx_type=request.form.get("tx_type")
+    cust_name="BRIAN GONASA" if cust_no=="0788401754" else "CUSTOMER NAME"
+    return render_template_string(CONFIRM_HTML, cust_no=cust_no, cust_name=cust_name, tx_type=tx_type, amount=amount)
 
-@app.route("/api/history")
-def hist(): return jsonify(history)
+@app.route("/confirm", methods=["POST"])
+def confirm():
+    return "<h2 style='font-family:Arial;text-align:center'>✅ Transaction Sent to MTN...</h2><p style='text-align:center'><a href='/dashboard'>Back to Home</a></p>"
 
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=5000)
